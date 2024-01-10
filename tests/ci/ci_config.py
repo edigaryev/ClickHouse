@@ -11,6 +11,10 @@ from ci_utils import WithIter
 
 
 class Labels(metaclass=WithIter):
+    """
+    Label names or commit tokens in normalized form
+    """
+
     DO_NOT_TEST_LABEL = "do_not_test"
     NO_MERGE_COMMIT = "no_merge_commit"
     NO_CI_CACHE = "no_ci_cache"
@@ -131,6 +135,8 @@ class JobNames(metaclass=WithIter):
     DOCS_CHECK = "Docs check"
     BUGFIX_VALIDATE = "tests bugfix validate check"
 
+    MARK_RELEASE_READY = "Mark Commit Release Ready"
+
 
 # dynamically update JobName with Build jobs
 for attr_name in dir(Build):
@@ -155,7 +161,7 @@ class DigestConfig:
 @dataclass
 class LabelConfig:
     """
-    class to configure different CI scenarious per GH label or commit message token
+    configures different CI scenarious per GH label
     """
 
     run_jobs: Iterable[str] = frozenset()
@@ -164,19 +170,26 @@ class LabelConfig:
 @dataclass
 class JobConfig:
     """
-    contains config parameter relevant for job execution in CI workflow
-    @digest - configures digest calculation for the job
-    @run_command - will be triggered for the job if omited in CI workflow yml
-    @timeout
-    @num_batches - sets number of batches for multi-batch job
+    contains config parameters for job execution in CI workflow
     """
 
+    # configures digest calculation for the job
     digest: DigestConfig = field(default_factory=DigestConfig)
+    # will be triggered for the job if omited in CI workflow yml
     run_command: str = ""
+    # job timeout
     timeout: Optional[int] = None
+    # sets number of batches for multi-batch job
     num_batches: int = 1
+    # label that enables job in CI, if set digest won't be used
     run_by_label: str = ""
+    # to run always regardless of the job digest or/and label
     run_always: bool = False
+    # if the job needs to be run on the main branch (e.g. building packages).
+    # NOTE: Subsequent runs with the similar digest are still considered skippable regardless of the branch.
+    required_on_master: bool = False
+    # completly turn off the job for the master branch
+    disabled_on_master: bool = False
 
 
 @dataclass
@@ -193,6 +206,7 @@ class BuildConfig:
     static_binary_name: str = ""
     job_config: JobConfig = field(
         default_factory=lambda: JobConfig(
+            required_on_master=True,
             digest=DigestConfig(
                 include_paths=[
                     "./src",
@@ -773,16 +787,20 @@ CI_CONFIG = CiConfig(
         ),
     },
     other_jobs_configs={
+        JobNames.MARK_RELEASE_READY: TestConfig(
+            "", job_config=JobConfig(required_on_master=True)
+        ),
         JobNames.DOCKER_SERVER: TestConfig(
             "",
             job_config=JobConfig(
+                required_on_master=True,
                 digest=DigestConfig(
                     include_paths=[
                         "tests/ci/docker_server.py",
                         "./docker/server",
                         "./docker/keeper",
                     ]
-                )
+                ),
             ),
         ),
         JobNames.DOCS_CHECK: TestConfig(
@@ -797,11 +815,12 @@ CI_CONFIG = CiConfig(
         JobNames.FAST_TEST: TestConfig(
             "",
             job_config=JobConfig(
+                disabled_on_master=True,
                 digest=DigestConfig(
                     include_paths=["./tests/queries/0_stateless/"],
                     exclude_files=[".md"],
                     docker=["clickhouse/fasttest"],
-                )
+                ),
             ),
         ),
         JobNames.STYLE_CHECK: TestConfig(
@@ -971,11 +990,15 @@ CI_CONFIG = CiConfig(
         ),
         JobNames.COMPATIBILITY_TEST: TestConfig(
             Build.PACKAGE_RELEASE,
-            job_config=JobConfig(digest=compatibility_check_digest),
+            job_config=JobConfig(
+                required_on_master=True, digest=compatibility_check_digest
+            ),
         ),
         JobNames.COMPATIBILITY_TEST_ARM: TestConfig(
             Build.PACKAGE_AARCH64,
-            job_config=JobConfig(digest=compatibility_check_digest),
+            job_config=JobConfig(
+                required_on_master=True, digest=compatibility_check_digest
+            ),
         ),
         JobNames.UNIT_TEST: TestConfig(
             Build.BINARY_RELEASE, job_config=JobConfig(**unit_test_common_params)  # type: ignore
