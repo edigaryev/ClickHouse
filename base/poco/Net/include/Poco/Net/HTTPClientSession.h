@@ -322,6 +322,11 @@ namespace Net
         virtual bool mustReconnect() const;
         /// Checks if we can reuse a persistent connection.
 
+        const Poco::Timestamp & getLastRequest() const;
+        /// Returns time when connection has been used last time
+
+        void setLastRequest(Poco::Timestamp time);
+
         virtual void proxyAuthenticate(HTTPRequest & request);
         /// Sets the proxy credentials (Proxy-Authorization header), if
         /// proxy username and password have been set.
@@ -438,6 +443,15 @@ namespace Net
         return _keepAliveTimeout;
     }
 
+    inline const Poco::Timestamp & HTTPClientSession::getLastRequest() const
+    {
+        return _lastRequest;
+    }
+
+    inline void HTTPClientSession::setLastRequest(Poco::Timestamp time)
+    {
+        return _lastRequest = time;
+    }
 
 }
 } // namespace Poco::Net

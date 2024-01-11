@@ -255,6 +255,11 @@
     M(ActiveTimersInQueryProfiler, "Number of Active thread local timers in QueryProfiler") \
     M(RefreshableViews, "Number materialized views with periodic refreshing (REFRESH)") \
     M(RefreshingViews, "Number of materialized views currently executing a refresh") \
+    \
+    M(S3SessionInPool, "Total count of sessions stored in the session pool") \
+    M(S3SessionActive, "Total count of all sessions: stored in the pool and actively used right now") \
+    \
+    M(S3IPsActive, "Total count of addresses which are used for creation connections") \
 
 #ifdef APPLY_FOR_EXTERNAL_METRICS
     #define APPLY_FOR_METRICS(M) APPLY_FOR_BUILTIN_METRICS(M) APPLY_FOR_EXTERNAL_METRICS(M)
