@@ -625,7 +625,7 @@ The server successfully detected this situation and will download merged part fr
     M(S3SessionConnectErrors, "Number of cases when creation of a s3 connection failed") \
     M(S3SessionConnectMicroseconds, "Total time spend on creating s3 connections") \
     \
-    M(S3IPsNew, "Total count of addresses in dns resolve results") \
+    M(S3IPsNew, "Total count of new addresses in dns resolve results") \
     M(S3IPsExpired, "Total count of expired addresses which is no longer presented in dns resolve results") \
     M(S3IPsFailScored, "Number of cases when an address is pessimizes due to a connection error ") \
 

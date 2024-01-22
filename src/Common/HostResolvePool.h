@@ -15,13 +15,19 @@
 //    But still not all requests are assigned to the new address.
 // - join resolve results
 //    In case when host is resolved into different set of addresses, this class join all that addresses and use them.
-//    An address expires after several (generation_history_) consecutive resolves without that address.
+//    An address expires after `history_` time.
 // - failing address pessimization
 //    If an address marked with `setFail()` it is marked as faulty. Such address won't be selected until either
-//    a) it still occurs in resolve set after generation_history resolves or b) all other addresses are pessimized as well.
+//    a) it still occurs in resolve set after `history_` time or b) all other addresses are pessimized as well.
+// - resolve schedule
+//    Addresses are resolved through `DB::DNSResolver::instance()`.
+//    Usually it does not happen more often than once in `history_` time.
+//    But also new resolve performed each `setFail()` call.
 
 namespace DB
 {
+
+constexpr size_t DEFAULT_RESOLVE_TIME_HISTORY_SECONDS = 2*60;
 
 class HostResolvePool : public std::enable_shared_from_this<HostResolvePool>
 {
@@ -81,9 +87,16 @@ public:
 
     Entry get();
     void update();
+    void updateWeights();
 
-private:
-    explicit HostResolvePool(String host_, size_t generation_history_  = 3);
+protected:
+    explicit HostResolvePool(String host_,
+                             Poco::Timespan history_ = Poco::Timespan(DEFAULT_RESOLVE_TIME_HISTORY_SECONDS, 0));
+
+    using ResolveFunction = std::function<std::vector<Poco::Net::IPAddress> (const String & host)>;
+    HostResolvePool(ResolveFunction && resolve_function_,
+                    String host_,
+                    Poco::Timespan history_);
 
     friend class Entry;
     WeakPtr getWeakFromThis();
@@ -93,9 +106,9 @@ private:
 
     struct Record
     {
-        Record(Poco::Net::IPAddress address_, size_t generation_)
+        Record(Poco::Net::IPAddress address_, Poco::Timestamp resolve_time_)
             : address(std::move(address_))
-            , generation(generation_)
+            , resolve_time(resolve_time_)
         {}
 
         explicit Record(Record && rec) = default;
@@ -105,19 +118,23 @@ private:
         Record& operator=(Record & s) = delete;
 
         Poco::Net::IPAddress address;
-        size_t generation = 0;
-        size_t ussage = 0;
+        Poco::Timestamp resolve_time;
+        size_t usage = 0;
         bool fail_bit = false;
-        size_t fail_generation = 0;
+        Poco::Timestamp fail_time;
 
         uint8_t getWeight() const
         {
-            if (ussage > 10000)
+            /// There is no goal to make usage's distribution ideally even
+            /// The goal is to chose more often new address, but still use old addresses as well
+            /// when all addresses have usage counter greater than 10000,
+            /// no more corrections are needed, just random choice is ok
+            if (usage > 10000)
                 return 1;
-            if (ussage > 1000)
-                return 3;
-            if (ussage > 100)
+            if (usage > 1000)
                 return 5;
+            if (usage > 100)
+                return 8;
             return 10;
         }
     };
@@ -133,21 +150,25 @@ private:
 
     Poco::Net::IPAddress selectBest() TSA_REQUIRES(mutex);
     Records::iterator find(const Poco::Net::IPAddress & address) TSA_REQUIRES(mutex);
-    UpdateStats updateImpl(std::vector<Poco::Net::IPAddress> & next_gen) TSA_REQUIRES(mutex);
+    bool isUpdateNeeded();
+    UpdateStats updateImpl(Poco::Timestamp now, std::vector<Poco::Net::IPAddress> & next_gen) TSA_REQUIRES(mutex);
     void initWeightMapImpl() TSA_REQUIRES(mutex);
     void initWeightMap() TSA_REQUIRES(mutex);
 
     const String host;
-    const size_t generation_history;
+    const Poco::Timespan history;
+
+    // for tests purpose
+    const ResolveFunction resolve_function;
 
     std::mutex mutex;
+
+    Poco::Timestamp last_resolve_time TSA_GUARDED_BY(mutex);
     Records records TSA_GUARDED_BY(mutex);
 
-    size_t total_weight = 0;
-    std::uniform_int_distribution<size_t> random_weight_picker;
-    std::vector<std::pair<uint8_t, size_t>> weight_map;
-
-    size_t last_generation = 0;
+    size_t total_weight TSA_GUARDED_BY(mutex) = 0;
+    std::uniform_int_distribution<size_t> random_weight_picker TSA_GUARDED_BY(mutex);
+    std::vector<std::pair<size_t, size_t>> weight_map TSA_GUARDED_BY(mutex);
 
     Poco::Logger * log = &Poco::Logger::get("SessionPool");
 };

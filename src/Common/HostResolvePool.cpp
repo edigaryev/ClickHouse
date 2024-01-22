@@ -29,9 +29,26 @@ DB::HostResolvePool::WeakPtr DB::HostResolvePool::getWeakFromThis()
     return weak_from_this();
 }
 
-DB::HostResolvePool::HostResolvePool(String host_, size_t generation_history_)
+DB::HostResolvePool::HostResolvePool(
+    String host_,
+    Poco::Timespan history_)
     : host(std::move(host_))
-    , generation_history(generation_history_)
+    , history(history_)
+    , resolve_function([] (const String & host_to_resolve)
+    {
+      return DB::DNSResolver::instance().resolveHostAll(host_to_resolve);
+    })
+{
+    update();
+}
+
+DB::HostResolvePool::HostResolvePool(
+    ResolveFunction && resolve_function_,
+    String host_,
+    Poco::Timespan history_)
+    : host(std::move(host_))
+    , history(history_)
+    , resolve_function(std::move(resolve_function_))
 {
     update();
 }
@@ -68,7 +85,7 @@ DB::HostResolvePool::Entry::~Entry()
 
 void DB::HostResolvePool::update()
 {
-    auto next_gen = DB::DNSResolver::instance().resolveHostAll(host);
+    auto next_gen = resolve_function(host);
     if (next_gen.empty())
         throw DB::Exception(ErrorCodes::DNS_ERROR, "no endpoints resolved for host {}", host);
 
@@ -78,45 +95,78 @@ void DB::HostResolvePool::update()
     SCOPE_EXIT({
         CurrentMetrics::add(CurrentMetrics::S3IPsActive, stats.added);
         CurrentMetrics::sub(CurrentMetrics::S3IPsActive, stats.expired);
+        ProfileEvents::increment(ProfileEvents::S3IPsNew, stats.added);
         ProfileEvents::increment(ProfileEvents::S3IPsExpired, stats.expired);
     });
 
+    Poco::Timestamp now;
+
     std::lock_guard lock(mutex);
-    stats = updateImpl(next_gen);
+    stats = updateImpl(now, next_gen);
+}
+
+void DB::HostResolvePool::updateWeights()
+{
+
+    std::lock_guard lock(mutex);
     initWeightMap();
 }
 
 DB::HostResolvePool::Entry DB::HostResolvePool::get()
 {
+    if (isUpdateNeeded())
+    {
+        update();
+    }
+
     std::lock_guard lock(mutex);
     return Entry(*this, selectBest());
 }
 
 void DB::HostResolvePool::setSuccess(const Poco::Net::IPAddress & address)
 {
+    size_t old_weight = 0;
+    size_t new_weight = 0;
+
+    SCOPE_EXIT({
+        if (old_weight != new_weight)
+        {
+            updateWeights();
+        }
+    });
+
     std::lock_guard lock(mutex);
 
     auto it = find(address);
     if (it == records.end())
         return;
-    ++it->ussage;
+
+    old_weight = it->getWeight();
+    ++it->usage;
+    new_weight = it->getWeight();
+
     // cal initWeightMap only when records are updated or setFail
 }
 
 void DB::HostResolvePool::setFail(const Poco::Net::IPAddress & address)
 {
-    std::lock_guard lock(mutex);
+    Poco::Timestamp now;
 
-    auto it = find(address);
-    if (it == records.end())
-        return;
-    if (it->fail_bit)
-        return;
-    it->fail_bit = true;
-    it->fail_generation = last_generation;
+    {
+        std::lock_guard lock(mutex);
+
+        auto it = find(address);
+        if (it == records.end())
+            return;
+        if (it->fail_bit)
+            return;
+
+        it->fail_bit = true;
+        it->fail_time = now;
+    }
+
     ProfileEvents::increment(ProfileEvents::S3IPsFailScored);
-
-    initWeightMap();
+    update();
 }
 
 Poco::Net::IPAddress DB::HostResolvePool::selectBest()
@@ -126,7 +176,7 @@ Poco::Net::IPAddress DB::HostResolvePool::selectBest()
     auto it = std::lower_bound(
         weight_map.begin(), weight_map.end(),
         weight,
-        [](const std::pair<uint8_t, size_t> & rec, size_t value)
+        [](const auto & rec, size_t value)
         {
             return rec.first < value;
         });
@@ -145,12 +195,19 @@ DB::HostResolvePool::Records::iterator DB::HostResolvePool::find(const Poco::Net
         });
 }
 
-DB::HostResolvePool::UpdateStats DB::HostResolvePool::updateImpl(std::vector<Poco::Net::IPAddress> & next_gen) TSA_REQUIRES(mutex)
+bool DB::HostResolvePool::isUpdateNeeded()
 {
-    ++last_generation;
-    size_t effective_generation = last_generation > generation_history ? last_generation - generation_history : 0;
+        Poco::Timestamp now;
 
-    ProfileEvents::increment(ProfileEvents::S3IPsNew, next_gen.size());
+        std::lock_guard lock(mutex);
+        return last_resolve_time + history < now || records.empty();
+}
+
+DB::HostResolvePool::UpdateStats DB::HostResolvePool::updateImpl(Poco::Timestamp now, std::vector<Poco::Net::IPAddress> & next_gen) TSA_REQUIRES(mutex)
+{
+
+    last_resolve_time = now;
+    auto last_effective_resolve = last_resolve_time - history;
 
     UpdateStats stats;
 
@@ -161,14 +218,14 @@ DB::HostResolvePool::UpdateStats DB::HostResolvePool::updateImpl(std::vector<Poc
         if (it == records.end() || it->address != addr)
         {
             ++stats.added;
-            records.insert(it, Record(addr, last_generation));
+            records.insert(it, Record(addr, now));
         }
         else
         {
             ++stats.updated;
 
-            it->generation = last_generation;
-            if (it->fail_bit && it->fail_generation < effective_generation)
+            it->resolve_time = now;
+            if (it->fail_bit && it->fail_time < last_effective_resolve)
             {
                 it->fail_bit = false;
             }
@@ -179,10 +236,12 @@ DB::HostResolvePool::UpdateStats DB::HostResolvePool::updateImpl(std::vector<Poc
         records,
         [=](const Record & rec)
         {
-            return rec.fail_bit && rec.generation < effective_generation;
+            return rec.resolve_time < last_effective_resolve;
         });
 
     stats.expired = removed;
+
+    initWeightMap();
 
     return stats;
 }
@@ -208,9 +267,9 @@ void DB::HostResolvePool::initWeightMap()
     if (total_weight == 0 && !records.empty())
     {
         for (auto & rec: records)
-            {
+        {
             rec.fail_bit = false;
-            }
+        }
 
         initWeightMapImpl();
     }
