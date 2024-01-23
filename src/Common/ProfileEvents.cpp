@@ -617,13 +617,13 @@ The server successfully detected this situation and will download merged part fr
     \
     M(ParallelReplicasUsedCount, "Number of replicas used to execute a query with task-based parallel replicas") \
     \
-    M(S3SessionCreated, "Number of created s3 connections") \
-    M(S3SessionReused, "Number of reused s3 connections") \
-    M(S3SessionReset, "Number of reset s3 connections") \
-    M(S3SessionPreserved, "Number of preserved s3 connections") \
-    M(S3SessionExpired, "Number of expired s3 connections") \
-    M(S3SessionConnectErrors, "Number of cases when creation of a s3 connection failed") \
-    M(S3SessionConnectMicroseconds, "Total time spend on creating s3 connections") \
+    M(S3ConnectionsCreated, "Number of created s3 connections") \
+    M(S3ConnectionsReused, "Number of reused s3 connections") \
+    M(S3ConnectionsReset, "Number of reset s3 connections") \
+    M(S3ConnectionsPreserved, "Number of preserved s3 connections") \
+    M(S3ConnectionsExpired, "Number of expired s3 connections") \
+    M(S3ConnectionsErrors, "Number of cases when creation of a s3 connection failed") \
+    M(S3ConnectionsElapsedMicroseconds, "Total time spend on creating s3 connections") \
     \
     M(S3IPsNew, "Total count of new addresses in dns resolve results") \
     M(S3IPsExpired, "Total count of expired addresses which is no longer presented in dns resolve results") \

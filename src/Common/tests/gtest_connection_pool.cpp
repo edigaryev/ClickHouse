@@ -1,5 +1,5 @@
 #include <IO/WriteBufferFromFile.h>
-#include <Common/SessionPool.h>
+#include <Common/ConnectionPool.h>
 
 #include <Poco/URI.h>
 #include <Poco/Net/ServerSocket.h>
@@ -65,11 +65,11 @@ class HTTPRequestHandlerFactory : public Poco::Net::HTTPRequestHandlerFactory
 using HTTPSession = Poco::Net::HTTPClientSession;
 using HTTPSessionPtr = std::shared_ptr<Poco::Net::HTTPClientSession>;
 
-using SessionPool = DB::SessionPool<HTTPSession>;
+using SessionPool = DB::ConnectionPool<HTTPSession>;
 
-class SessionPoolTest : public testing::Test {
+class ConnectionPoolTest : public testing::Test {
 protected:
-    SessionPoolTest() = default;
+    ConnectionPoolTest() = default;
 
     // If the constructor and destructor are not enough for setting up
     // and cleaning up each test, you can define the following methods:
@@ -102,7 +102,7 @@ protected:
         server_data = {};
         server_data.params = new Poco::Net::HTTPServerParams();
         server_data.handler_factory = new HTTPRequestHandlerFactory();
-        server_data.socket.reset(new Poco::Net::ServerSocket(0));
+        server_data.socket.reset(new Poco::Net::ServerSocket(81));
         server_data.server.reset(
             new Poco::Net::HTTPServer(server_data.handler_factory, *server_data.socket, server_data.params));
 
@@ -125,19 +125,19 @@ protected:
 
 namespace ProfileEvents
 {
-    extern const Event S3SessionCreated;
-    extern const Event S3SessionReused;
-    extern const Event S3SessionReset;
-    extern const Event S3SessionPreserved;
-    extern const Event S3SessionExpired;
-    extern const Event S3SessionConnectErrors;
-    extern const Event S3SessionConnectMicroseconds;
+    extern const Event S3ConnectionsCreated;
+    extern const Event S3ConnectionsReused;
+    extern const Event S3ConnectionsReset;
+    extern const Event S3ConnectionsPreserved;
+    extern const Event S3ConnectionsExpired;
+    extern const Event S3ConnectionsErrors;
+    extern const Event S3ConnectionsElapsedMicroseconds;
 }
 
 namespace CurrentMetrics
 {
-    extern const Metric S3SessionInPool;
-    extern const Metric S3SessionActive;
+    extern const Metric S3ConnectionsInPool;
+    extern const Metric S3ConnectionsActive;
 }
 
 void wait_until(std::function<bool()> pred)
@@ -166,144 +166,144 @@ void echoRequest(String data, HTTPSession & session)
     }
 }
 
-TEST_F(SessionPoolTest, CanConnect)
+TEST_F(ConnectionPoolTest, CanConnect)
 {
     std::cerr << "create pool" << std::endl;
     auto pool = makePool();
-    std::cerr << "create session" << std::endl;
-    auto session = pool->getSession();
+    std::cerr << "create connection" << std::endl;
+    auto connection = pool->getConnection();
 
-    ASSERT_TRUE(session->connected());
-    ASSERT_EQ(1, DB::CurrentThread::getProfileEvents()[ProfileEvents::S3SessionCreated]);
+    ASSERT_TRUE(connection->connected());
+    ASSERT_EQ(1, DB::CurrentThread::getProfileEvents()[ProfileEvents::S3ConnectionsCreated]);
 
-    ASSERT_EQ(1, CurrentMetrics::get(CurrentMetrics::S3SessionActive));
-    ASSERT_EQ(0, CurrentMetrics::get(CurrentMetrics::S3SessionInPool));
+    ASSERT_EQ(1, CurrentMetrics::get(CurrentMetrics::S3ConnectionsActive));
+    ASSERT_EQ(0, CurrentMetrics::get(CurrentMetrics::S3ConnectionsInPool));
 
     wait_until([&] () { return getServer().currentConnections() == 1; });
     ASSERT_EQ(1, getServer().currentConnections());
     ASSERT_EQ(1, getServer().totalConnections());
 
-    std::cerr << "reset session" << std::endl;
-    session->reset();
+    std::cerr << "reset connection" << std::endl;
+    connection->reset();
 
     wait_until([&] () { return getServer().currentConnections() == 0; });
     ASSERT_EQ(0, getServer().currentConnections());
     ASSERT_EQ(1, getServer().totalConnections());
 
-    ASSERT_EQ(1, DB::CurrentThread::getProfileEvents()[ProfileEvents::S3SessionCreated]);
+    ASSERT_EQ(1, DB::CurrentThread::getProfileEvents()[ProfileEvents::S3ConnectionsCreated]);
 }
 
-TEST_F(SessionPoolTest, CanRequest)
+TEST_F(ConnectionPoolTest, CanRequest)
 {
     auto pool = makePool();
-    auto session = pool->getSession();
+    auto connection = pool->getConnection();
 
     std::cerr << "make request" << std::endl;
-    echoRequest("Hello", *session);
+    echoRequest("Hello", *connection);
 
     ASSERT_EQ(1, getServer().totalConnections());
     ASSERT_EQ(1, getServer().currentConnections());
 
-    std::cerr << "reset session" << std::endl;
-    session->reset();
+    std::cerr << "reset connection" << std::endl;
+    connection->reset();
 
     wait_until([&] () { return getServer().currentConnections() == 0; });
     ASSERT_EQ(0, getServer().currentConnections());
     ASSERT_EQ(1, getServer().totalConnections());
 
-    ASSERT_EQ(1, DB::CurrentThread::getProfileEvents()[ProfileEvents::S3SessionCreated]);
+    ASSERT_EQ(1, DB::CurrentThread::getProfileEvents()[ProfileEvents::S3ConnectionsCreated]);
 }
 
-TEST_F(SessionPoolTest, CanPreserve)
+TEST_F(ConnectionPoolTest, CanPreserve)
 {
     auto pool = makePool();
 
     {
-        std::cerr << "create session" << std::endl;
-        auto session = pool->getSession();
+        std::cerr << "create connection" << std::endl;
+        auto connection = pool->getConnection();
         std::cerr << "set reuse tag" << std::endl;
-        setReuseTag(*session);
-        std::cerr << "implicit save session with reuse tag" << std::endl;
+        setReuseTag(*connection);
+        std::cerr << "implicit save connection with reuse tag" << std::endl;
     }
 
-    ASSERT_EQ(1, CurrentMetrics::get(CurrentMetrics::S3SessionActive));
-    ASSERT_EQ(1, CurrentMetrics::get(CurrentMetrics::S3SessionInPool));
+    ASSERT_EQ(1, CurrentMetrics::get(CurrentMetrics::S3ConnectionsActive));
+    ASSERT_EQ(1, CurrentMetrics::get(CurrentMetrics::S3ConnectionsInPool));
 
     wait_until([&] () { return getServer().currentConnections() == 1; });
     ASSERT_EQ(1, getServer().currentConnections());
 
-    ASSERT_EQ(1, DB::CurrentThread::getProfileEvents()[ProfileEvents::S3SessionCreated]);
-    ASSERT_EQ(1, DB::CurrentThread::getProfileEvents()[ProfileEvents::S3SessionPreserved]);
-    ASSERT_EQ(0, DB::CurrentThread::getProfileEvents()[ProfileEvents::S3SessionReused]);
+    ASSERT_EQ(1, DB::CurrentThread::getProfileEvents()[ProfileEvents::S3ConnectionsCreated]);
+    ASSERT_EQ(1, DB::CurrentThread::getProfileEvents()[ProfileEvents::S3ConnectionsPreserved]);
+    ASSERT_EQ(0, DB::CurrentThread::getProfileEvents()[ProfileEvents::S3ConnectionsReused]);
 }
 
-TEST_F(SessionPoolTest, CanReuse)
+TEST_F(ConnectionPoolTest, CanReuse)
 {
     auto pool = makePool();
 
     {
-        auto session = pool->getSession();
-        setReuseTag(*session);
+        auto connection = pool->getConnection();
+        setReuseTag(*connection);
     }
 
-    ASSERT_EQ(1, CurrentMetrics::get(CurrentMetrics::S3SessionActive));
-    ASSERT_EQ(1, CurrentMetrics::get(CurrentMetrics::S3SessionInPool));
+    ASSERT_EQ(1, CurrentMetrics::get(CurrentMetrics::S3ConnectionsActive));
+    ASSERT_EQ(1, CurrentMetrics::get(CurrentMetrics::S3ConnectionsInPool));
 
     {
-        auto session = pool->getSession();
+        auto connection = pool->getConnection();
 
-        ASSERT_EQ(1, CurrentMetrics::get(CurrentMetrics::S3SessionActive));
-        ASSERT_EQ(0, CurrentMetrics::get(CurrentMetrics::S3SessionInPool));
+        ASSERT_EQ(1, CurrentMetrics::get(CurrentMetrics::S3ConnectionsActive));
+        ASSERT_EQ(0, CurrentMetrics::get(CurrentMetrics::S3ConnectionsInPool));
 
         wait_until([&] () { return getServer().currentConnections() == 1; });
         ASSERT_EQ(1, getServer().currentConnections());
 
-        echoRequest("Hello", *session);
+        echoRequest("Hello", *connection);
 
         ASSERT_EQ(1, getServer().totalConnections());
         ASSERT_EQ(1, getServer().currentConnections());
 
-        std::cerr << "implicit reset session" << std::endl;
+        std::cerr << "implicit reset connection" << std::endl;
     }
 
-    ASSERT_EQ(0, CurrentMetrics::get(CurrentMetrics::S3SessionActive));
-    ASSERT_EQ(0, CurrentMetrics::get(CurrentMetrics::S3SessionInPool));
+    ASSERT_EQ(0, CurrentMetrics::get(CurrentMetrics::S3ConnectionsActive));
+    ASSERT_EQ(0, CurrentMetrics::get(CurrentMetrics::S3ConnectionsInPool));
 
     wait_until([&] () { return getServer().currentConnections() == 0; });
     ASSERT_EQ(0, getServer().currentConnections());
     ASSERT_EQ(1, getServer().totalConnections());
 
-    ASSERT_EQ(1, DB::CurrentThread::getProfileEvents()[ProfileEvents::S3SessionCreated]);
-    ASSERT_EQ(1, DB::CurrentThread::getProfileEvents()[ProfileEvents::S3SessionPreserved]);
-    ASSERT_EQ(1, DB::CurrentThread::getProfileEvents()[ProfileEvents::S3SessionReused]);
+    ASSERT_EQ(1, DB::CurrentThread::getProfileEvents()[ProfileEvents::S3ConnectionsCreated]);
+    ASSERT_EQ(1, DB::CurrentThread::getProfileEvents()[ProfileEvents::S3ConnectionsPreserved]);
+    ASSERT_EQ(1, DB::CurrentThread::getProfileEvents()[ProfileEvents::S3ConnectionsReused]);
 }
 
-TEST_F(SessionPoolTest, CanReuse10)
+TEST_F(ConnectionPoolTest, CanReuse10)
 {
     auto pool = makePool();
 
 
     for (int i = 0; i < 10; ++i)
     {
-        auto session = pool->getSession();
-        echoRequest("Hello", *session);
-        setReuseTag(*session);
+        auto connection = pool->getConnection();
+        echoRequest("Hello", *connection);
+        setReuseTag(*connection);
     }
 
     {
-        [[maybe_unused]] auto tmp = pool->getSession();
+        [[maybe_unused]] auto tmp = pool->getConnection();
     }
 
     wait_until([&] () { return getServer().currentConnections() == 0; });
     ASSERT_EQ(0, getServer().currentConnections());
     ASSERT_EQ(1, getServer().totalConnections());
 
-    ASSERT_EQ(1, DB::CurrentThread::getProfileEvents()[ProfileEvents::S3SessionCreated]);
-    ASSERT_EQ(10, DB::CurrentThread::getProfileEvents()[ProfileEvents::S3SessionPreserved]);
-    ASSERT_EQ(10, DB::CurrentThread::getProfileEvents()[ProfileEvents::S3SessionReused]);
+    ASSERT_EQ(1, DB::CurrentThread::getProfileEvents()[ProfileEvents::S3ConnectionsCreated]);
+    ASSERT_EQ(10, DB::CurrentThread::getProfileEvents()[ProfileEvents::S3ConnectionsPreserved]);
+    ASSERT_EQ(10, DB::CurrentThread::getProfileEvents()[ProfileEvents::S3ConnectionsReused]);
 }
 
-TEST_F(SessionPoolTest, CanReconnectAndCreate)
+TEST_F(ConnectionPoolTest, CanReconnectAndCreate)
 {
     auto pool = makePool();
 
@@ -312,39 +312,39 @@ TEST_F(SessionPoolTest, CanReconnectAndCreate)
     const size_t count = 2;
     for (int i = 0; i < count; ++i)
     {
-        auto session = pool->getSession();
-        setReuseTag(*session);
-        in_use.push_back(session);
+        auto connecti = pool->getConnection();
+        setReuseTag(*connecti);
+        in_use.push_back(connecti);
     }
 
-    ASSERT_EQ(count, DB::CurrentThread::getProfileEvents()[ProfileEvents::S3SessionCreated]);
-    ASSERT_EQ(0, DB::CurrentThread::getProfileEvents()[ProfileEvents::S3SessionPreserved]);
-    ASSERT_EQ(0, DB::CurrentThread::getProfileEvents()[ProfileEvents::S3SessionReused]);
+    ASSERT_EQ(count, DB::CurrentThread::getProfileEvents()[ProfileEvents::S3ConnectionsCreated]);
+    ASSERT_EQ(0, DB::CurrentThread::getProfileEvents()[ProfileEvents::S3ConnectionsPreserved]);
+    ASSERT_EQ(0, DB::CurrentThread::getProfileEvents()[ProfileEvents::S3ConnectionsReused]);
 
-    ASSERT_EQ(count, CurrentMetrics::get(CurrentMetrics::S3SessionActive));
-    ASSERT_EQ(0, CurrentMetrics::get(CurrentMetrics::S3SessionInPool));
+    ASSERT_EQ(count, CurrentMetrics::get(CurrentMetrics::S3ConnectionsActive));
+    ASSERT_EQ(0, CurrentMetrics::get(CurrentMetrics::S3ConnectionsInPool));
 
-    auto session = std::move(in_use.back());
+    auto connecti = std::move(in_use.back());
     in_use.pop_back();
 
-    echoRequest("Hello", *session);
+    echoRequest("Hello", *connecti);
 
-    session->abort(); // further usage requires reconnect, new connection
+    connecti->abort(); // further usage requires reconnect, new connection
 
-    echoRequest("Hello", *session);
+    echoRequest("Hello", *connecti);
 
-    session->reset();
+    connecti->reset();
 
     wait_until([&] () { return getServer().currentConnections() == 1; });
     ASSERT_EQ(1, getServer().currentConnections());
     ASSERT_EQ(count+1, getServer().totalConnections());
 
-    ASSERT_EQ(count+1, DB::CurrentThread::getProfileEvents()[ProfileEvents::S3SessionCreated]);
-    ASSERT_EQ(0, DB::CurrentThread::getProfileEvents()[ProfileEvents::S3SessionPreserved]);
-    ASSERT_EQ(0, DB::CurrentThread::getProfileEvents()[ProfileEvents::S3SessionReused]);
+    ASSERT_EQ(count+1, DB::CurrentThread::getProfileEvents()[ProfileEvents::S3ConnectionsCreated]);
+    ASSERT_EQ(0, DB::CurrentThread::getProfileEvents()[ProfileEvents::S3ConnectionsPreserved]);
+    ASSERT_EQ(0, DB::CurrentThread::getProfileEvents()[ProfileEvents::S3ConnectionsReused]);
 }
 
-TEST_F(SessionPoolTest, CanReconnectAndReuse)
+TEST_F(ConnectionPoolTest, CanReconnectAndReuse)
 {
     auto pool = makePool();
 
@@ -353,28 +353,28 @@ TEST_F(SessionPoolTest, CanReconnectAndReuse)
     const size_t count = 2;
     for (int i = 0; i < count; ++i)
     {
-        auto session = pool->getSession();
-        setReuseTag(*session);
-        in_use.push_back(std::move(session));
+        auto connecti = pool->getConnection();
+        setReuseTag(*connecti);
+        in_use.push_back(std::move(connecti));
     }
 
-    auto session = std::move(in_use.back());
+    auto connecti = std::move(in_use.back());
     in_use.pop_back();
-    in_use.clear(); // other session will be reused
+    in_use.clear(); // other connecti will be reused
 
-    echoRequest("Hello", *session);
+    echoRequest("Hello", *connecti);
 
-    session->abort(); // further usage requires reconnect, reuse connection from pool
+    connecti->abort(); // further usage requires reconnect, reuse connection from pool
 
-    echoRequest("Hello", *session);
+    echoRequest("Hello", *connecti);
 
-    session->reset();
+    connecti->reset();
 
     wait_until([&] () { return getServer().currentConnections() == 0; });
     ASSERT_EQ(0, getServer().currentConnections());
     ASSERT_EQ(2, getServer().totalConnections());
 
-    ASSERT_EQ(count, DB::CurrentThread::getProfileEvents()[ProfileEvents::S3SessionCreated]);
-    ASSERT_EQ(1, DB::CurrentThread::getProfileEvents()[ProfileEvents::S3SessionPreserved]);
-    ASSERT_EQ(1, DB::CurrentThread::getProfileEvents()[ProfileEvents::S3SessionReused]);
+    ASSERT_EQ(count, DB::CurrentThread::getProfileEvents()[ProfileEvents::S3ConnectionsCreated]);
+    ASSERT_EQ(1, DB::CurrentThread::getProfileEvents()[ProfileEvents::S3ConnectionsPreserved]);
+    ASSERT_EQ(1, DB::CurrentThread::getProfileEvents()[ProfileEvents::S3ConnectionsReused]);
 }

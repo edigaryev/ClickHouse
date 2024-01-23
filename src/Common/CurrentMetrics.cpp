@@ -256,8 +256,8 @@
     M(RefreshableViews, "Number materialized views with periodic refreshing (REFRESH)") \
     M(RefreshingViews, "Number of materialized views currently executing a refresh") \
     \
-    M(S3SessionInPool, "Total count of sessions stored in the session pool") \
-    M(S3SessionActive, "Total count of all sessions: stored in the pool and actively used right now") \
+    M(S3ConnectionsInPool, "Total count of sessions stored in the session pool") \
+    M(S3ConnectionsActive, "Total count of all sessions: stored in the pool and actively used right now") \
     \
     M(S3IPsActive, "Total count of addresses which are used for creation connections") \
 

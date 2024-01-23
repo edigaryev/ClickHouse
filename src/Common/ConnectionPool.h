@@ -17,14 +17,14 @@
 // - it uses HostResolvePool for address selecting. See Common/HostResolvePool.h for more info.
 // - it minimizes number of `Session::connect()`/`Session::reconnect()` calls
 //   - stores only connected and ready to use sessions
-//   - session could be reused even when limits are reached
+//   - connection could be reused even when limits are reached
 // - soft limit
 // - warn limit
 // - `Session::reconnect()` uses that pool
 // - comprehensive sensors
 
 
-// session live stages
+// connection live stages
 // CREATED -> STORED
 // CREATED -> RESET
 // STORED -> EXPIRED
@@ -36,64 +36,64 @@ namespace DB
 {
 
 template <class Session>
-class SessionPool : public std::enable_shared_from_this<SessionPool<Session>>
+class ConnectionPool : public std::enable_shared_from_this<ConnectionPool<Session>>
 {
 private:
-    using WeakPtr = std::weak_ptr<SessionPool<Session>>;
+    using WeakPtr = std::weak_ptr<ConnectionPool<Session>>;
 
 public:
-    using Ptr = std::shared_ptr<SessionPool<Session>>;
+    using Ptr = std::shared_ptr<ConnectionPool<Session>>;
 
     template<class... Args>
     static Ptr create(Args&&... args)
     {
-        struct make_shared_enabler : public SessionPool<Session>
+        struct make_shared_enabler : public ConnectionPool<Session>
         {
-            make_shared_enabler(Args&&... args) : SessionPool<Session>(std::forward<Args>(args)...) {}
+            make_shared_enabler(Args&&... args) : ConnectionPool<Session>(std::forward<Args>(args)...) {}
         };
         return std::make_shared<make_shared_enabler>(std::forward<Args>(args)...);
     }
 
-    virtual ~SessionPool();
+    virtual ~ConnectionPool();
 
-    SessionPool(const SessionPool&) = delete;
-    SessionPool& operator=(const SessionPool&) = delete;
+    ConnectionPool(const ConnectionPool &) = delete;
+    ConnectionPool & operator=(const ConnectionPool &) = delete;
 
-    class PooledSession : public std::enable_shared_from_this<PooledSession>, public Session
+    class PooledConnection : public std::enable_shared_from_this<PooledConnection>, public Session
     {
     public:
-        using Ptr = std::shared_ptr<PooledSession>;
+        using Ptr = std::shared_ptr<PooledConnection>;
 
         void reconnect() override;
-        ~PooledSession() override;
+        ~PooledConnection() override;
 
     private:
-        friend class SessionPool<Session>;
+        friend class ConnectionPool<Session>;
 
         template<class... Args>
-        PooledSession(SessionPool<Session> & pool_, Args&&... args);
+        PooledConnection(ConnectionPool<Session> & pool_, Args&&... args);
 
         template<class... Args>
         static Ptr create(Args&&... args);
 
         void doConnect() { Session::reconnect(); }
 
-        void jumpToSession(PooledSession & session);
+        void jumpToOtherConnection(PooledConnection & connection);
 
         typedef Session Base;
 
-        SessionPool::WeakPtr pool;
+        ConnectionPool::WeakPtr pool;
     };
 
-    PooledSession::Ptr getSession();
+    PooledConnection::Ptr getConnection();
 
 private:
-    SessionPool(String host_, UInt16 port_, bool https_,
+    ConnectionPool(String host_, UInt16 port_, bool https_,
                 DB::ProxyConfiguration proxy_configuration_,
                 size_t soft_limit_ = 1000,
                 size_t warn_limit_ = 20000);
 
-    friend class PooledSession;
+    friend class PooledConnection;
     WeakPtr getWeakFromThis();
 
     const std::string host;
@@ -103,34 +103,34 @@ private:
     const size_t soft_limit;
     const size_t warn_limit;
 
-    Poco::Logger * log = &Poco::Logger::get("SessionPool");
+    Poco::Logger * log = &Poco::Logger::get("ConnectionPool");
 
-    struct MaxHeapSessionByLastRequestCompare
+    struct CompareByLastRequest
     {
-        static bool operator() (const PooledSession::Ptr & l, const PooledSession::Ptr & r)
+        static bool operator() (const PooledConnection::Ptr & l, const PooledConnection::Ptr & r)
         {
             return l->getLastRequest() > r->getLastRequest();
         }
     };
 
-    using MaxHeapSessionByLastRequest = std::priority_queue<typename PooledSession::Ptr,
-                                                            std::vector<typename PooledSession::Ptr>,
-                                                            MaxHeapSessionByLastRequestCompare>;
+    using ConnectionsMaxHeap
+        = std::priority_queue<typename PooledConnection::Ptr,
+                              std::vector<typename PooledConnection::Ptr>, CompareByLastRequest>;
 
     HostResolvePool::Ptr resolve_pool;
 
     std::mutex mutex;
-    MaxHeapSessionByLastRequest stored_sessions TSA_GUARDED_BY(mutex);
-    std::atomic<size_t> active_sessions = 0;
+    ConnectionsMaxHeap stored_connections TSA_GUARDED_BY(mutex);
+    std::atomic<size_t> active_connections = 0;
     std::atomic<size_t> mute_warn_until = 0;
 
-    bool isExpired(Poco::Timestamp & now, PooledSession::Ptr session) TSA_REQUIRES(mutex);
+    bool isExpired(Poco::Timestamp & now, PooledConnection::Ptr connection) TSA_REQUIRES(mutex);
 
     void wipeExpired();
 
-    PooledSession::Ptr prepareNewSession();
+    PooledConnection::Ptr prepareNewConnection();
 
-    void storeDestroyingSession(PooledSession & session);
+    void storeDestroyingConnection(PooledConnection & connection);
 };
 
 bool hasReuseTag(Poco::Net::HTTPSession & session);

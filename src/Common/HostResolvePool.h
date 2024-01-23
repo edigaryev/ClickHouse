@@ -170,7 +170,7 @@ protected:
     std::uniform_int_distribution<size_t> random_weight_picker TSA_GUARDED_BY(mutex);
     std::vector<std::pair<size_t, size_t>> weight_map TSA_GUARDED_BY(mutex);
 
-    Poco::Logger * log = &Poco::Logger::get("SessionPool");
+    Poco::Logger * log = &Poco::Logger::get("ConnectionPool");
 };
 
 }
