@@ -89,6 +89,7 @@ protected:
     SessionPool::Ptr makePool()
     {
         auto uri = Poco::URI(getServerUrl());
+        std::cerr << "make connection pool to the endpoint: " << uri.toString() << std::endl;
         return SessionPool::create(uri.getHost(), uri.getPort(), uri.getScheme() == "https", DB::ProxyConfiguration());
     }
 
@@ -102,7 +103,7 @@ protected:
         server_data = {};
         server_data.params = new Poco::Net::HTTPServerParams();
         server_data.handler_factory = new HTTPRequestHandlerFactory();
-        server_data.socket.reset(new Poco::Net::ServerSocket(81));
+        server_data.socket.reset(new Poco::Net::ServerSocket(server_data.port));
         server_data.server.reset(
             new Poco::Net::HTTPServer(server_data.handler_factory, *server_data.socket, server_data.params));
 
@@ -116,6 +117,8 @@ protected:
 
     struct
     {
+        // just some port to avoid collisions with others tests
+        UInt16 port = 9871;
         Poco::Net::HTTPServerParams::Ptr params;
         HTTPRequestHandlerFactory::Ptr handler_factory;
         std::unique_ptr<Poco::Net::ServerSocket> socket;
@@ -168,9 +171,7 @@ void echoRequest(String data, HTTPSession & session)
 
 TEST_F(ConnectionPoolTest, CanConnect)
 {
-    std::cerr << "create pool" << std::endl;
     auto pool = makePool();
-    std::cerr << "create connection" << std::endl;
     auto connection = pool->getConnection();
 
     ASSERT_TRUE(connection->connected());
@@ -183,7 +184,6 @@ TEST_F(ConnectionPoolTest, CanConnect)
     ASSERT_EQ(1, getServer().currentConnections());
     ASSERT_EQ(1, getServer().totalConnections());
 
-    std::cerr << "reset connection" << std::endl;
     connection->reset();
 
     wait_until([&] () { return getServer().currentConnections() == 0; });
@@ -198,13 +198,11 @@ TEST_F(ConnectionPoolTest, CanRequest)
     auto pool = makePool();
     auto connection = pool->getConnection();
 
-    std::cerr << "make request" << std::endl;
     echoRequest("Hello", *connection);
 
     ASSERT_EQ(1, getServer().totalConnections());
     ASSERT_EQ(1, getServer().currentConnections());
 
-    std::cerr << "reset connection" << std::endl;
     connection->reset();
 
     wait_until([&] () { return getServer().currentConnections() == 0; });
@@ -219,9 +217,7 @@ TEST_F(ConnectionPoolTest, CanPreserve)
     auto pool = makePool();
 
     {
-        std::cerr << "create connection" << std::endl;
         auto connection = pool->getConnection();
-        std::cerr << "set reuse tag" << std::endl;
         setReuseTag(*connection);
         std::cerr << "implicit save connection with reuse tag" << std::endl;
     }
@@ -312,9 +308,9 @@ TEST_F(ConnectionPoolTest, CanReconnectAndCreate)
     const size_t count = 2;
     for (int i = 0; i < count; ++i)
     {
-        auto connecti = pool->getConnection();
-        setReuseTag(*connecti);
-        in_use.push_back(connecti);
+        auto connection = pool->getConnection();
+        setReuseTag(*connection);
+        in_use.push_back(connection);
     }
 
     ASSERT_EQ(count, DB::CurrentThread::getProfileEvents()[ProfileEvents::S3ConnectionsCreated]);
@@ -324,16 +320,16 @@ TEST_F(ConnectionPoolTest, CanReconnectAndCreate)
     ASSERT_EQ(count, CurrentMetrics::get(CurrentMetrics::S3ConnectionsActive));
     ASSERT_EQ(0, CurrentMetrics::get(CurrentMetrics::S3ConnectionsInPool));
 
-    auto connecti = std::move(in_use.back());
+    auto connection = std::move(in_use.back());
     in_use.pop_back();
 
-    echoRequest("Hello", *connecti);
+    echoRequest("Hello", *connection);
 
-    connecti->abort(); // further usage requires reconnect, new connection
+    connection->abort(); // further usage requires reconnect, new connection
 
-    echoRequest("Hello", *connecti);
+    echoRequest("Hello", *connection);
 
-    connecti->reset();
+    connection->reset();
 
     wait_until([&] () { return getServer().currentConnections() == 1; });
     ASSERT_EQ(1, getServer().currentConnections());
@@ -353,22 +349,22 @@ TEST_F(ConnectionPoolTest, CanReconnectAndReuse)
     const size_t count = 2;
     for (int i = 0; i < count; ++i)
     {
-        auto connecti = pool->getConnection();
-        setReuseTag(*connecti);
-        in_use.push_back(std::move(connecti));
+        auto connection = pool->getConnection();
+        setReuseTag(*connection);
+        in_use.push_back(std::move(connection));
     }
 
-    auto connecti = std::move(in_use.back());
+    auto connection = std::move(in_use.back());
     in_use.pop_back();
-    in_use.clear(); // other connecti will be reused
+    in_use.clear(); // other connection will be reused
 
-    echoRequest("Hello", *connecti);
+    echoRequest("Hello", *connection);
 
-    connecti->abort(); // further usage requires reconnect, reuse connection from pool
+    connection->abort(); // further usage requires reconnect, reuse connection from pool
 
-    echoRequest("Hello", *connecti);
+    echoRequest("Hello", *connection);
 
-    connecti->reset();
+    connection->reset();
 
     wait_until([&] () { return getServer().currentConnections() == 0; });
     ASSERT_EQ(0, getServer().currentConnections());
